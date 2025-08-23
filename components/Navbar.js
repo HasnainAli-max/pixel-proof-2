@@ -2,27 +2,44 @@
 
 import Link from "next/link";
 import React, { useEffect, useMemo, useState } from "react";
-import { auth } from "@/lib/firebase/config";
+import { auth, db } from "@/lib/firebase/config";
 import { onAuthStateChanged, signOut as fbSignOut } from "firebase/auth";
+import { doc, onSnapshot } from "firebase/firestore";
 
 export default function Navbar({ user: userProp, onSignOut }) {
   const [open, setOpen] = useState(false);
   const [selfUser, setSelfUser] = useState(null);
+  const [profileDoc, setProfileDoc] = useState(null); // Firestore user doc
 
-  // If no user prop is provided, listen to Firebase auth as a fallback
+  // If no user prop is provided, listen to Firebase Auth as a fallback
   useEffect(() => {
-    let unsub;
+    let unsubAuth;
     if (!userProp) {
-      unsub = onAuthStateChanged(auth, (u) => setSelfUser(u));
+      unsubAuth = onAuthStateChanged(auth, (u) => setSelfUser(u || null));
     } else {
       setSelfUser(userProp);
     }
-    return () => unsub && unsub();
+    return () => unsubAuth && unsubAuth();
   }, [userProp]);
 
   const user = userProp || selfUser;
 
-  // Close on Esc
+  // Live-subscribe to Firestore user doc (to read photoURL saved there)
+  useEffect(() => {
+    if (!user?.uid) {
+      setProfileDoc(null);
+      return;
+    }
+    const ref = doc(db, "users", user.uid);
+    const unsub = onSnapshot(
+      ref,
+      (snap) => setProfileDoc(snap.exists() ? snap.data() : null),
+      () => setProfileDoc(null)
+    );
+    return () => unsub();
+  }, [user?.uid]);
+
+  // Close offcanvas on Esc
   useEffect(() => {
     const onKey = (e) => e.key === "Escape" && setOpen(false);
     if (open) window.addEventListener("keydown", onKey);
@@ -38,6 +55,23 @@ export default function Navbar({ user: userProp, onSignOut }) {
     const second = parts[1]?.[0] || "";
     return (first + second).toUpperCase();
   }, [user]);
+
+  /**
+   * Decide which photo to show:
+   * 1) Prefer Firestore users/{uid}.photoURL (image you saved for the user)
+   *    - also check a couple common alternate field names in case your doc uses them
+   * 2) Fallback to Firebase Auth user.photoURL (e.g., Google sign-in picture)
+   */
+  const photoURLToShow = useMemo(() => {
+    const fromFirestore =
+      profileDoc?.photoURL ||
+      profileDoc?.avatarURL ||
+      profileDoc?.avatarUrl ||
+      profileDoc?.avatar?.url ||
+      null;
+
+    return fromFirestore || user?.photoURL || null;
+  }, [profileDoc, user]);
 
   const handleLogout = async () => {
     try {
@@ -74,9 +108,9 @@ export default function Navbar({ user: userProp, onSignOut }) {
                 className="relative inline-flex items-center justify-center h-9 w-9 rounded-full ring-1 ring-gray-200 dark:ring-gray-700 overflow-hidden focus:outline-none focus:ring-2 focus:ring-purple-500 transition"
                 aria-label="Open menu"
               >
-                {user.photoURL ? (
+                {photoURLToShow ? (
                   <img
-                    src={user.photoURL}
+                    src={photoURLToShow}
                     alt="Profile"
                     className="h-full w-full object-cover"
                     referrerPolicy="no-referrer"
@@ -92,14 +126,14 @@ export default function Navbar({ user: userProp, onSignOut }) {
         </div>
       </div>
 
-      {/* Offcanvas Sidebar (always mounted for smooth close animation) */}
+      {/* Offcanvas Sidebar */}
       {user && (
         <div
           className={`fixed inset-0 z-50 transition-opacity duration-300 ${
             open ? "opacity-100 pointer-events-auto" : "opacity-0 pointer-events-none"
           }`}
           aria-hidden={!open}
-          onClick={() => setOpen(false)} // click anywhere to close
+          onClick={() => setOpen(false)}
         >
           {/* Backdrop */}
           <div
@@ -112,16 +146,17 @@ export default function Navbar({ user: userProp, onSignOut }) {
           <aside
             role="dialog"
             aria-modal="true"
-            onClick={(e) => e.stopPropagation()} // prevent closing when clicking inside
-            className={`absolute right-0 top-0 h-full w-80 max-w-[90%] bg-white dark:bg-gray-900 shadow-2xl border-l border-gray-200 dark:border-gray-800 transform transition-transform duration-300 ease-in-out
-              ${open ? "translate-x-0" : "translate-x-full"}`}
+            onClick={(e) => e.stopPropagation()}
+            className={`absolute right-0 top-0 h-full w-80 max-w-[90%] bg-white dark:bg-gray-900 shadow-2xl border-l border-gray-200 dark:border-gray-800 transform transition-transform duration-300 ease-in-out ${
+              open ? "translate-x-0" : "translate-x-full"
+            }`}
           >
             {/* Header */}
             <div className="flex items-center justify-between px-4 py-3 border-b border-gray-200 dark:border-gray-800">
               <div className="flex items-center gap-3">
-                {user.photoURL ? (
+                {photoURLToShow ? (
                   <img
-                    src={user.photoURL}
+                    src={photoURLToShow}
                     alt="Profile"
                     className="h-9 w-9 rounded-full object-cover ring-1 ring-gray-200 dark:ring-gray-700"
                     referrerPolicy="no-referrer"
@@ -144,8 +179,12 @@ export default function Navbar({ user: userProp, onSignOut }) {
                 aria-label="Close"
                 className="p-2 rounded hover:bg-gray-100 dark:hover:bg-gray-800"
               >
-                {/* X icon */}
-                <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-gray-700 dark:text-gray-300" viewBox="0 0 20 20" fill="currentColor">
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  className="h-5 w-5 text-gray-700 dark:text-gray-300"
+                  viewBox="0 0 20 20"
+                  fill="currentColor"
+                >
                   <path
                     fillRule="evenodd"
                     d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z"
@@ -165,6 +204,7 @@ export default function Navbar({ user: userProp, onSignOut }) {
                 <span className="inline-block h-2 w-2 rounded-full bg-fuchsia-600" />
                 <span className="text-sm font-medium">Home</span>
               </Link>
+
               <Link
                 href="/profile"
                 className="flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-800 dark:text-gray-200"
@@ -183,9 +223,7 @@ export default function Navbar({ user: userProp, onSignOut }) {
                 <span className="text-sm font-medium">Accounts</span>
               </Link>
 
-
-
-               <Link
+              <Link
                 href="/aboutus"
                 className="flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-800 dark:text-gray-200"
                 onClick={() => setOpen(false)}
@@ -193,7 +231,6 @@ export default function Navbar({ user: userProp, onSignOut }) {
                 <span className="inline-block h-2 w-2 rounded-full bg-fuchsia-600" />
                 <span className="text-sm font-medium">About Us</span>
               </Link>
-
 
               <Link
                 href="/contactus"
