@@ -10,6 +10,9 @@ import { Toaster, toast } from "sonner";
 import Navbar from "@/components/Navbar";
 import ChangePassword from "@/components/ChangePassword";
 
+const ACCEPTED = ["image/jpeg", "image/png", "image/webp"];
+const MAX_MB = 10;
+
 export default function Profile() {
   const router = useRouter();
   const [user, setUser] = useState(null);
@@ -24,6 +27,12 @@ export default function Profile() {
   const [saving, setSaving]       = useState(false);
   const [loading, setLoading]     = useState(true);
 
+  // avatar upload state
+  const [file, setFile]           = useState(null);
+  const [preview, setPreview]     = useState(null);
+  const [uploading, setUploading] = useState(false);
+  const [dragging, setDragging]   = useState(false);
+
   // derived
   const displayName = useMemo(() => {
     const name = `${firstName || ""} ${lastName || ""}`.trim();
@@ -33,9 +42,7 @@ export default function Profile() {
   const initials = useMemo(() => {
     const a = (firstName || "").trim();
     const b = (lastName || "").trim();
-    if (a || b) {
-      return `${a?.[0] || ""}${b?.[0] || ""}`.toUpperCase() || "U";
-    }
+    if (a || b) return `${a?.[0] || ""}${b?.[0] || ""}`.toUpperCase() || "U";
     const fromEmail = (email || "").trim().charAt(0);
     return (fromEmail || "U").toUpperCase();
   }, [firstName, lastName, email]);
@@ -48,13 +55,11 @@ export default function Profile() {
       }
       setUser(u);
       setEmail(u.email || "");
-      setPhotoURL(u.photoURL || ""); // EXACTLY what Navbar uses
+      setPhotoURL(u.photoURL || "");
 
-      // Load names from Firestore if present, otherwise parse from Auth displayName
       try {
         const ref = doc(db, "users", u.uid);
         const snap = await getDoc(ref);
-
         if (snap.exists()) {
           const d = snap.data();
           setFirstName(d.firstName || (u.displayName?.split(" ")?.[0] ?? ""));
@@ -64,8 +69,7 @@ export default function Profile() {
           setFirstName(parts[0] || "");
           setLastName(parts.slice(1).join(" ") || "");
         }
-      } catch (e) {
-        console.error("Failed to read user doc:", e);
+      } catch {
         const parts = (u.displayName || "").trim().split(" ").filter(Boolean);
         setFirstName(parts[0] || "");
         setLastName(parts.slice(1).join(" ") || "");
@@ -73,12 +77,19 @@ export default function Profile() {
         setLoading(false);
       }
     });
-
     return () => unsub();
   }, [router]);
 
+  useEffect(() => {
+    return () => {
+      if (preview) URL.revokeObjectURL(preview);
+    };
+  }, [preview]);
+
   const handleSave = async () => {
-    if (!user) return toast.error("Not signed in.");
+    const current = auth.currentUser;
+    if (!current) return toast.error("Not signed in.");
+
     const fn = firstName.trim();
     const ln = lastName.trim();
     if (!fn) return toast.error("First name is required.");
@@ -87,12 +98,12 @@ export default function Profile() {
       setSaving(true);
       const newDisplayName = `${fn} ${ln}`.trim();
 
-      // 1) Update Firebase Auth (affects Navbar immediately)
-      await updateProfile(user, { displayName: newDisplayName });
+      await updateProfile(current, { displayName: newDisplayName });
+      await current.reload();
+      setUser(auth.currentUser);
 
-      // 2) Upsert Firestore profile
       await setDoc(
-        doc(db, "users", user.uid),
+        doc(db, "users", current.uid),
         {
           firstName: fn,
           lastName: ln,
@@ -101,9 +112,6 @@ export default function Profile() {
         },
         { merge: true }
       );
-
-      // ensure local navbar shows new name right away
-      setUser({ ...user, displayName: newDisplayName });
 
       toast.success("Name updated!");
     } catch (e) {
@@ -114,115 +122,259 @@ export default function Profile() {
     }
   };
 
+  const validateIncomingFile = (f) => {
+    if (!f) return "No file selected.";
+    if (!ACCEPTED.includes(f.type)) return "Use JPG, PNG, or WEBP.";
+    if (f.size > MAX_MB * 1024 * 1024) return `Max file size is ${MAX_MB} MB.`;
+    return null;
+  };
+
+  const onFileChange = (e) => {
+    const f = e.target.files?.[0];
+    if (!f) {
+      setFile(null);
+      if (preview) URL.revokeObjectURL(preview);
+      setPreview(null);
+      return;
+    }
+    const err = validateIncomingFile(f);
+    if (err) return toast.error(err);
+
+    if (preview) URL.revokeObjectURL(preview);
+    setFile(f);
+    setPreview(URL.createObjectURL(f));
+  };
+
+  const onDrop = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setDragging(false);
+    const f = e.dataTransfer.files?.[0];
+    if (!f) return;
+    const err = validateIncomingFile(f);
+    if (err) return toast.error(err);
+
+    if (preview) URL.revokeObjectURL(preview);
+    setFile(f);
+    setPreview(URL.createObjectURL(f));
+  };
+
+  const cancelPreview = () => {
+    if (preview) URL.revokeObjectURL(preview);
+    setPreview(null);
+    setFile(null);
+  };
+
+  const handleUploadPhoto = async () => {
+    const current = auth.currentUser;
+    if (!current) return toast.error("Not signed in.");
+    if (!file)  return toast.error("Please choose an image.");
+
+    try {
+      setUploading(true);
+      const idToken = await current.getIdToken(true);
+
+      const form = new FormData();
+      form.append("file", file, file.name);
+
+      const res = await fetch("/api/upload-avatar", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${idToken}` },
+        body: form,
+      });
+
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error || "Upload failed.");
+
+      const newURL = data?.photoURL;
+      if (!newURL) {
+        toast.error("Upload succeeded but URL missing.");
+        return;
+      }
+
+      await updateProfile(current, { photoURL: newURL });
+      await current.reload();
+      setUser(auth.currentUser);
+      setPhotoURL(newURL);
+
+      await setDoc(
+        doc(db, "users", current.uid),
+        { photoURL: newURL, avatarPath: data?.avatarPath || null, updatedAt: serverTimestamp() },
+        { merge: true }
+      );
+
+      toast.success("Profile photo updated!");
+      if (preview) URL.revokeObjectURL(preview);
+      setPreview(null);
+      setFile(null);
+    } catch (e) {
+      console.error(e);
+      toast.error(e.message || "Failed to upload image.");
+    } finally {
+      setUploading(false);
+    }
+  };
+
   return (
     <>
-      {/* Navbar gets the same user object + sign out */}
       <Navbar user={user} onSignOut={() => signOut(auth)} />
-
       <Toaster richColors position="top-right" closeButton />
 
-      <main className="max-w-3xl mx-auto px-4 py-8">
-        {/* Header / Hero */}
-        <section className="bg-white dark:bg-gray-900 rounded-2xl shadow-sm border border-gray-200 dark:border-gray-800 p-6 md:p-8">
-          <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-6">
-            {/* Avatar + basic info */}
-            <div className="flex items-center gap-4">
-              <div className="relative w-24 h-24 md:w-28 md:h-28 shrink-0">
-                {/* If photoURL exists and loads: show photo; else show generated avatar */}
+      <main className="max-w-3xl mx-auto px-4 py-6">
+        <section className="bg-white dark:bg-gray-900 rounded-xl shadow-sm border border-gray-200 dark:border-gray-800 p-5">
+          {/* Compact header row */}
+          <div className="flex items-center justify-between gap-4">
+            <div className="flex items-center gap-3">
+              {/* Smaller avatar + camera trigger */}
+              <div className="relative w-16 h-16 md:w-20 md:h-20 shrink-0">
                 {photoURL ? (
                   <img
                     src={photoURL}
                     alt="Profile avatar"
-                    className="w-24 h-24 md:w-28 md:h-28 rounded-full object-cover border border-gray-200 bg-gray-100 dark:bg-gray-800"
+                    className="w-16 h-16 md:w-20 md:h-20 rounded-full object-cover border border-gray-200 bg-gray-100 dark:bg-gray-800"
                     referrerPolicy="no-referrer"
-                    onError={() => setPhotoURL("")} // fallback to initials if URL fails
+                    onError={() => setPhotoURL("")}
                   />
                 ) : (
                   <div
-                    className="w-24 h-24 md:w-28 md:h-28 rounded-full flex items-center justify-center
+                    className="w-16 h-16 md:w-20 md:h-20 rounded-full flex items-center justify-center
                                bg-gradient-to-br from-purple-500 to-indigo-600
                                text-white border border-gray-200 shadow-sm select-none"
                     aria-label="Default avatar"
                     title="Default avatar"
                   >
-                    <span className="text-2xl md:text-3xl font-semibold tracking-wide">
+                    <span className="text-lg md:text-xl font-semibold tracking-wide">
                       {initials}
                     </span>
                   </div>
                 )}
+
+                {/* Floating camera button (only browse trigger) */}
+                <label
+                  htmlFor="avatar-file"
+                  className="absolute -bottom-1 -right-1 h-8 w-8 rounded-full bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 shadow grid place-items-center cursor-pointer hover:scale-105 transition"
+                  title="Change photo"
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-gray-700 dark:text-gray-200" viewBox="0 0 24 24" fill="currentColor">
+                    <path d="M9 2a1 1 0 00-.894.553L7.382 4H5a3 3 0 00-3 3v9a3 3 0 003 3h14a3 3 0 003-3V7a3 3 0 00-3-3h-2.382l-.724-1.447A1 1 0 0014 2H9zm3 5a5 5 0 110 10 5 5 0 010-10z" />
+                  </svg>
+                </label>
+                <input id="avatar-file" type="file" accept={ACCEPTED.join(",")} onChange={onFileChange} className="hidden" />
               </div>
 
               <div className="min-w-0">
-                <h1 className="text-xl md:text-2xl font-semibold text-gray-900 dark:text-gray-100 truncate">
+                <h1 className="text-lg md:text-xl font-semibold text-gray-900 dark:text-gray-100 truncate">
                   {loading ? "Loading..." : displayName}
                 </h1>
-                <p className="text-sm text-gray-600 dark:text-gray-400 truncate">{email}</p>
+                <p className="text-xs md:text-sm text-gray-600 dark:text-gray-400 truncate">{email}</p>
               </div>
             </div>
 
-            
+            {/* Compact name save button */}
+            <button
+              onClick={handleSave}
+              disabled={loading || saving}
+              className={`px-3 py-2 rounded-md text-white text-sm font-medium
+                ${saving ? "bg-purple-400 cursor-not-allowed" : "bg-purple-600 hover:bg-purple-700"}`}
+            >
+              {saving ? "Saving..." : "Save"}
+            </button>
           </div>
 
-          {/* Divider */}
-          <div className="my-6 border-t border-gray-200 dark:border-gray-800" />
+          {/* Ultra-compact uploader strip */}
+          <div
+            onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
+            onDragEnter={(e) => { e.preventDefault(); setDragging(true); }}
+            onDragLeave={(e) => { e.preventDefault(); setDragging(false); }}
+            onDrop={onDrop}
+            className={`mt-4 rounded-lg border border-dashed px-3 py-2 text-sm flex items-center gap-3
+              ${dragging ? "border-purple-500 bg-purple-50/70 dark:bg-purple-900/20" : "border-gray-300 dark:border-gray-700 bg-gray-50 dark:bg-gray-900"}`}
+          >
+            {!preview ? (
+              <div className="flex items-center justify-between w-full">
+                <span className="text-gray-700 dark:text-gray-300 truncate">
+                  Drag & drop an image here. To browse, click the camera icon.
+                </span>
+                <span className="text-xs text-gray-500 dark:text-gray-400 hidden sm:inline">
+                  JPG/PNG/WEBP · ≤ {MAX_MB}MB
+                </span>
+              </div>
+            ) : (
+              <>
+                <img
+                  src={preview}
+                  alt="Preview"
+                  className="h-10 w-10 rounded-full object-cover border border-gray-200 dark:border-gray-700"
+                />
+                <div className="flex-1 min-w-0">
+                  <p className="text-gray-800 dark:text-gray-200 truncate">{file?.name}</p>
+                </div>
+                <button
+                  onClick={cancelPreview}
+                  disabled={uploading}
+                  className="px-3 py-1.5 rounded-md border text-sm border-gray-300 dark:border-gray-700 hover:bg-gray-100 dark:hover:bg-gray-800"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleUploadPhoto}
+                  disabled={uploading}
+                  className={`px-3 py-1.5 rounded-md text-white text-sm
+                    ${uploading ? "bg-purple-400 cursor-not-allowed" : "bg-purple-600 hover:bg-purple-700"}`}
+                >
+                  {uploading ? "Uploading…" : "Use photo"}
+                </button>
+              </>
+            )}
+          </div>
 
-          {/* Edit Name Form */}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          {/* Compact name fields */}
+          <div className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-3">
             <div>
-              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+              <label className="block text-xs font-medium text-gray-700 dark:text-gray-300 mb-1">
                 First name
               </label>
               <input
                 value={firstName}
                 onChange={(e) => setFirstName(e.target.value)}
-                placeholder="Enter first name"
-                className="w-full rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-900 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-purple-500"
+                placeholder="First name"
+                className="w-full rounded-md border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-900 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-purple-500"
                 disabled={loading || saving}
               />
             </div>
 
             <div>
-              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+              <label className="block text-xs font-medium text-gray-700 dark:text-gray-300 mb-1">
                 Last name
               </label>
               <input
                 value={lastName}
                 onChange={(e) => setLastName(e.target.value)}
-                placeholder="Enter last name"
-                className="w-full rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-900 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-purple-500"
+                placeholder="Last name"
+                className="w-full rounded-md border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-900 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-purple-500"
                 disabled={loading || saving}
               />
             </div>
           </div>
 
-          <div className="mt-6 flex flex-col sm:flex-row gap-3">
-            <button
-              onClick={handleSave}
-              disabled={loading || saving}
-              className={`inline-flex items-center justify-center px-4 py-2 rounded-lg text-white text-sm font-medium
-                ${saving ? "bg-purple-400 cursor-not-allowed" : "bg-purple-600 hover:bg-purple-700"}
-              `}
-            >
-              {saving ? "Saving..." : "Save changes"}
-            </button>
-
+          <div className="mt-3">
             <button
               onClick={() => {
-                // reset fields from current user displayName
-                const parts = (user?.displayName || "").trim().split(" ").filter(Boolean);
+                const current = auth.currentUser;
+                const parts = (current?.displayName || "").trim().split(" ").filter(Boolean);
                 setFirstName(parts[0] || "");
                 setLastName(parts.slice(1).join(" ") || "");
                 toast.message("Reverted to current name.");
               }}
               disabled={loading || saving}
-              className="inline-flex items-center justify-center px-4 py-2 rounded-lg text-sm font-medium border border-gray-300 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800"
+              className="inline-flex items-center justify-center px-3 py-1.5 rounded-md text-sm font-medium border border-gray-300 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800"
             >
               Reset
             </button>
           </div>
 
-          {/* Change Password Card */}
-          <div className="mt-8">
+          {/* Password card */}
+          <div className="mt-6">
             <ChangePassword />
           </div>
         </section>

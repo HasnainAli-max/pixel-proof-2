@@ -5,6 +5,7 @@ import { onAuthStateChanged, signOut } from "firebase/auth";
 import { doc, onSnapshot } from "firebase/firestore";
 import { auth, db } from "@/lib/firebase/config";
 import Navbar from "@/components/Navbar";
+import { Toaster, toast } from "sonner";
 
 export default function Accounts() {
   const router = useRouter();
@@ -13,12 +14,20 @@ export default function Accounts() {
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
 
-  // sign out (same behavior as utility page)
+  // sign out (same behavior as utility page) + toast
   const handleSignOut = async () => {
     try {
-      await signOut(auth);
+      await toast.promise(
+        signOut(auth),
+        {
+          loading: "Signing you out…",
+          success: "Signed out.",
+          error: "Sign out failed. Please try again.",
+        }
+      );
       router.replace("/login");
     } catch (e) {
+      // toast already shown in promise error handler
       console.error("Sign out failed:", e);
     }
   };
@@ -45,7 +54,11 @@ export default function Accounts() {
         setUserDoc(snap.exists() ? snap.data() : null);
         setLoading(false);
       },
-      () => setLoading(false)
+      (err) => {
+        console.error("Account load error:", err);
+        toast.error("Couldn't load your account details. Please refresh.");
+        setLoading(false);
+      }
     );
     return () => unsub();
   }, [authUser?.uid]);
@@ -73,29 +86,41 @@ export default function Accounts() {
     return { name, loginEmail, billingEmail, plan, amount, status, renewDate };
   }, [userDoc, authUser]);
 
-  // 4) open Stripe Customer Portal (intent optional: 'update' | 'cancel' | 'delete')
+  // 4) open Stripe Customer Portal (intent optional: 'update' | 'cancel')
   async function openPortal(intent) {
     try {
       setBusy(true);
-      const token = await auth.currentUser.getIdToken();
-      const res = await fetch("/api/billing/portal", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({ intent }),
-      });
+      await toast.promise(
+        (async () => {
+          const token = await auth.currentUser.getIdToken();
+          const res = await fetch("/api/billing/portal", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${token}`,
+            },
+            body: JSON.stringify({ intent }),
+          });
 
-      const text = await res.text();
-      let data;
-      try { data = JSON.parse(text); } catch { throw new Error(text); }
-      if (!res.ok) throw new Error(data.error || "Failed to create portal session");
+          const text = await res.text();
+          let data;
+          try { data = JSON.parse(text); } catch { throw new Error(text); }
+          if (!res.ok) throw new Error(data.error || "Failed to create portal session");
 
-      window.location.href = data.url;
+          // brief success toast then redirect
+          setTimeout(() => { window.location.href = data.url; }, 300);
+          return "Redirecting to Stripe…";
+        })(),
+        {
+          loading: intent === "cancel" ? "Opening cancel options…" : "Opening billing portal…",
+          success: (msg) => msg || "Redirecting…",
+          error: (e) => e?.message || "Could not open customer portal.",
+        }
+      );
     } catch (e) {
+      // toast already shown above
       console.error("openPortal error:", e);
-      alert(e.message || "Could not open customer portal.");
+    } finally {
       setBusy(false);
     }
   }
@@ -103,6 +128,7 @@ export default function Accounts() {
   if (loading) {
     return (
       <main className="min-h-screen grid place-items-center text-slate-600 dark:text-slate-300">
+        <Toaster richColors position="top-right" closeButton />
         Loading account…
       </main>
     );
@@ -114,6 +140,8 @@ export default function Accounts() {
       <Head>
         <title>Account – PixelProof</title>
       </Head>
+
+      <Toaster richColors position="top-right" closeButton />
 
       {/* Same Navbar as Utility page */}
       <Navbar user={authUser} onSignOut={handleSignOut} />
@@ -200,22 +228,6 @@ export default function Accounts() {
               </button>
             </div>
           </aside>
-
-          {/* Danger Zone */}
-          <section className="lg:col-span-3 bg-white dark:bg-slate-800 rounded-2xl shadow-sm ring-1 ring-black/5 dark:ring-white/10 p-6 mt-2">
-            <h3 className="text-lg font-semibold text-slate-900 dark:text-slate-100 mb-2">Danger Zone</h3>
-            <p className="text-slate-600 dark:text-slate-300 text-sm mb-4">
-              Deleting the subscription removes access immediately and cannot be undone.
-            </p>
-            <button
-              type="button"
-              disabled={busy}
-              onClick={() => openPortal("delete")}
-              className="h-11 px-5 rounded-xl bg-rose-600 text-white font-medium shadow-sm hover:bg-rose-700 disabled:opacity-50 transition dark:bg-rose-700 dark:hover:bg-rose-600"
-            >
-              Delete subscription
-            </button>
-          </section>
         </div>
       </main>
     </>
