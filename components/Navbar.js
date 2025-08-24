@@ -240,6 +240,14 @@ export default function Navbar({ user: userProp, onSignOut }) {
                 <span className="inline-block h-2 w-2 rounded-full bg-fuchsia-600" />
                 <span className="text-sm font-medium">Contact Us</span>
               </Link>
+              <Link
+                href="/"
+                className="flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-800 dark:text-gray-200"
+                onClick={() => setOpen(false)}
+              >
+                <span className="inline-block h-2 w-2 rounded-full bg-fuchsia-600" />
+                <span className="text-sm font-medium">Plans</span>
+              </Link>
 
               <button
                 onClick={async () => {
