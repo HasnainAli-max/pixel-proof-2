@@ -28,8 +28,8 @@ export default async function handler(req, res) {
       mode: 'subscription',
       customer_email: decoded.email || undefined,
       line_items: [{ price: resolvedPrice, quantity: 1 }],
-      success_url: `${process.env.APP_URL || 'http://localhost:3000'}/billing/success?session_id={CHECKOUT_SESSION_ID}`,
-      cancel_url: `${process.env.APP_URL || 'http://localhost:3000'}/billing/cancel`,
+      success_url: `${process.env.APP_URL || 'https://pixel-proof-2-renu.vercel.app'}/billing/success?session_id={CHECKOUT_SESSION_ID}`,
+      cancel_url: `${process.env.APP_URL || 'https://pixel-proof-2-renu.vercel.app'}/billing/cancel`,
       metadata: { uid: decoded.uid, plan: plan || 'custom' }, // used by webhook
     });
 
