@@ -8,6 +8,9 @@ const PRICE_MAP = {
   elite: process.env.STRIPE_PRICE_ELITE,
 };
 
+// Always send users back to your live domain
+const BASE_URL = 'https://pixel-proof-2-renu.vercel.app';
+
 export default async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
 
@@ -28,9 +31,9 @@ export default async function handler(req, res) {
       mode: 'subscription',
       customer_email: decoded.email || undefined,
       line_items: [{ price: resolvedPrice, quantity: 1 }],
-      success_url: `${process.env.APP_URL || 'https://pixel-proof-2-renu.vercel.app'}/billing/success?session_id={CHECKOUT_SESSION_ID}`,
-      cancel_url: `${process.env.APP_URL || 'https://pixel-proof-2-renu.vercel.app'}/billing/cancel`,
-      metadata: { uid: decoded.uid, plan: plan || 'custom' }, // used by webhook
+      success_url: `${BASE_URL}?payment=success&session_id={CHECKOUT_SESSION_ID}`,
+      cancel_url:  `${BASE_URL}?payment=cancelled`,
+      metadata: { uid: decoded.uid, plan: plan || 'custom' },
     });
 
     return res.status(200).json({ url: session.url });
@@ -39,6 +42,7 @@ export default async function handler(req, res) {
     return res.status(500).json({ error: 'Internal Server Error' });
   }
 }
+
 // pages/api/checkout.js
 // import { stripe } from "@/lib/stripe/stripe";
 // import { authAdmin } from "@/lib/firebase/firebaseAdmin";
