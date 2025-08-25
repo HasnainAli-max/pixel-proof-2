@@ -5,11 +5,13 @@ import React, { useEffect, useMemo, useState } from "react";
 import { auth, db } from "@/lib/firebase/config";
 import { onAuthStateChanged, signOut as fbSignOut } from "firebase/auth";
 import { doc, onSnapshot } from "firebase/firestore";
+import { toast } from "sonner";
 
 export default function Navbar({ user: userProp, onSignOut }) {
   const [open, setOpen] = useState(false);
   const [selfUser, setSelfUser] = useState(null);
   const [profileDoc, setProfileDoc] = useState(null); // Firestore user doc
+  const [busy, setBusy] = useState(false); // for Upgrade Plan action
 
   // If no user prop is provided, listen to Firebase Auth as a fallback
   useEffect(() => {
@@ -84,6 +86,52 @@ export default function Navbar({ user: userProp, onSignOut }) {
       console.error("Sign out failed:", e);
     }
   };
+
+  // --- NEW: same portal flow as on Accounts page ---
+  async function openPortal(intent = "update") {
+    try {
+      setBusy(true);
+      await toast.promise(
+        (async () => {
+          const token = await auth.currentUser.getIdToken();
+          const res = await fetch("/api/billing/portal", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${token}`,
+            },
+            body: JSON.stringify({ intent }), // "update" for upgrade/manage plan
+          });
+
+          const text = await res.text();
+          let data;
+          try {
+            data = JSON.parse(text);
+          } catch {
+            throw new Error(text);
+          }
+          if (!res.ok) throw new Error(data.error || "Failed to create portal session");
+
+          // close sidebar then redirect
+          setOpen(false);
+          setTimeout(() => {
+            window.location.href = data.url;
+          }, 300);
+          return "Redirecting to Stripe…";
+        })(),
+        {
+          loading: intent === "cancel" ? "Opening cancel options…" : "Opening billing portal…",
+          success: (msg) => msg || "Redirecting…",
+          error: (e) => e?.message || "Could not open customer portal.",
+        }
+      );
+    } catch (e) {
+      console.error("openPortal error:", e);
+    } finally {
+      setBusy(false);
+    }
+  }
+  // ---------------------------------------------------
 
   return (
     <header className="w-full border-b border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 shadow-sm">
@@ -240,6 +288,7 @@ export default function Navbar({ user: userProp, onSignOut }) {
                 <span className="inline-block h-2 w-2 rounded-full bg-fuchsia-600" />
                 <span className="text-sm font-medium">Contact Us</span>
               </Link>
+
               <Link
                 href="/"
                 className="flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-800 dark:text-gray-200"
@@ -249,12 +298,24 @@ export default function Navbar({ user: userProp, onSignOut }) {
                 <span className="text-sm font-medium">Plans</span>
               </Link>
 
+              {/* NEW: Upgrade plan (opens Stripe Customer Portal with "update" intent) */}
+              <button
+                type="button"
+                onClick={() => openPortal("update")}
+                disabled={busy}
+                aria-disabled={busy}
+                className="mt-1 w-full text-left flex items-center gap-3 px-3 py-2 rounded-lg border border-purple-300/60 dark:border-purple-700/60 bg-purple-50 dark:bg-purple-900/20 hover:bg-purple-100 dark:hover:bg-purple-900/30 text-purple-900 dark:text-purple-200 disabled:opacity-60"
+              >
+                <span className="inline-block h-2 w-2 rounded-full bg-purple-600" />
+                <span className="text-sm font-semibold">Upgrade plan</span>
+              </button>
+
               <button
                 onClick={async () => {
                   setOpen(false);
                   await handleLogout();
                 }}
-                className="flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-800 dark:text-gray-200"
+                className="mt-1 flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-800 dark:text-gray-200"
               >
                 Logout
               </button>
