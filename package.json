@@ -2,8 +2,9 @@
   "name": "ai-qa-agent",
   "version": "1.0.0",
   "private": true,
- "scripts": {
-    "dev": "concurrently -k -p \"[{name}]\" -n stripe,web -c yellow,cyan \"node scripts/dev-webhooks.mjs\" \"next dev -p 3000\"",
+  "scripts": {
+    "dev": "cross-env FIRESTORE_EMULATOR_HOST=127.0.0.1:8080 DEV_WEBHOOK_NO_VERIFY=true concurrently -k -p \"[{name}]\" -n stripe,web -c yellow,cyan \"node scripts/dev-webhooks.mjs\" \"next dev -p 3000\"",
+     "emulators": "firebase emulators:start --only firestore",
     "web": "next dev -p 3000",
     "stripe:webhooks": "node scripts/dev-webhooks.mjs",
     "build": "next build",
@@ -37,6 +38,7 @@
     "tailwindcss": "^3.3.2"
   },
   "devDependencies": {
-    "concurrently": "^9.2.0"
+    "concurrently": "^9.2.0",
+    "firebase-tools": "^14.14.0"
   }
 }

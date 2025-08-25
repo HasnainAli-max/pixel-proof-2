@@ -13,12 +13,38 @@ const PLAN_BY_PRICE = {
   [process.env.STRIPE_PRICE_ELITE]: 'elite',
 };
 
+/* ---------- Helpers ---------- */
+
 function toTs(secOrMs) {
   if (!secOrMs) return null;
   const ms = secOrMs > 1e12 ? secOrMs : secOrMs * 1000;
   return Timestamp.fromMillis(ms);
 }
 
+// Simple retry helper
+async function withRetry(fn, { tries = 3, baseDelayMs = 300, prodThrows = true } = {}) {
+  let lastErr;
+  for (let i = 0; i < tries; i++) {
+    try {
+      return await fn();
+    } catch (e) {
+      lastErr = e;
+      await new Promise((r) => setTimeout(r, baseDelayMs * (i + 1)));
+    }
+  }
+  if (process.env.NODE_ENV === 'production' && prodThrows) {
+    throw lastErr;
+  } else {
+    console.warn('[webhook] Firestore write failed in dev (continuing):', lastErr?.message || lastErr);
+  }
+}
+
+// Safe Firestore set with retry
+async function safeSet(docRef, data, merge = true) {
+  await withRetry(() => docRef.set(data, { merge }), { tries: process.env.NODE_ENV === 'production' ? 5 : 2 });
+}
+
+// Compact event log
 async function logStripeEvent({ event, rawLength, hint = {}, uid = null }) {
   const obj = event?.data?.object || {};
   const isSubObject = obj?.object === 'subscription';
@@ -40,9 +66,10 @@ async function logStripeEvent({ event, rawLength, hint = {}, uid = null }) {
     receivedAt: FieldValue.serverTimestamp(),
   };
 
-  await db.collection('stripeEvents').doc(event.id).set(logDoc, { merge: true });
+  await safeSet(db.collection('stripeEvents').doc(event.id), logDoc);
 }
 
+// Update Firestore user from a Subscription object
 async function writeFromSubscriptionEvent(subscription) {
   const customerId =
     typeof subscription.customer === 'string'
@@ -74,7 +101,7 @@ async function writeFromSubscriptionEvent(subscription) {
     subscriptionId: subscription.id,
     priceId,
     activePlan: plan,
-    subscriptionStatus: subscription.status,             // <- 'canceled' will be written here
+    subscriptionStatus: subscription.status, // includes 'canceled'
     currentPeriodStart: toTs(subscription.current_period_start),
     currentPeriodEnd: toTs(subscription.current_period_end),
     cancelAtPeriodEnd: !!subscription.cancel_at_period_end,
@@ -91,33 +118,38 @@ async function writeFromSubscriptionEvent(subscription) {
   };
 
   if (uidFromMetadata) {
-    await db.collection('users').doc(uidFromMetadata).set(payload, { merge: true });
+    await safeSet(db.collection('users').doc(uidFromMetadata), payload);
     return uidFromMetadata;
   }
 
   if (customerId) {
-    const q = await db.collection('users')
+    const q = await db
+      .collection('users')
       .where('stripeCustomerId', '==', customerId)
       .limit(1)
       .get();
 
     if (!q.empty) {
       const uid = q.docs[0].id;
-      await db.collection('users').doc(uid).set(payload, { merge: true });
+      await safeSet(db.collection('users').doc(uid), payload);
       return uid;
     }
   }
 
-  await db.collection('stripeOrphans').doc(String(subscription.id)).set({
-    reason: 'No user doc with this stripeCustomerId and no customer.metadata.uid',
-    customerId: customerId || null,
-    status: subscription.status,
-    createdAt: FieldValue.serverTimestamp(),
-  });
+  await safeSet(
+    db.collection('stripeOrphans').doc(String(subscription.id)),
+    {
+      reason: 'No user doc with this stripeCustomerId and no customer.metadata.uid',
+      customerId: customerId || null,
+      status: subscription.status,
+      createdAt: FieldValue.serverTimestamp(),
+    }
+  );
 
   return null;
 }
 
+// After checkout completes, map uid ↔ customer and hydrate sub
 async function handleCheckoutCompleted(session) {
   if (session.mode !== 'subscription') return { note: 'ignored non-subscription session' };
 
@@ -133,7 +165,8 @@ async function handleCheckoutCompleted(session) {
     } catch {}
 
     const customerDetails = session.customer_details || {};
-    await db.collection('users').doc(uid).set(
+    await safeSet(
+      db.collection('users').doc(uid),
       {
         stripeCustomerId: customerId,
         lastCheckoutSessionId: session.id,
@@ -143,8 +176,7 @@ async function handleCheckoutCompleted(session) {
           address: customerDetails.address || null,
         },
         updatedAt: FieldValue.serverTimestamp(),
-      },
-      { merge: true }
+      }
     );
   }
 
@@ -165,9 +197,7 @@ async function parseStripeEvent(req) {
   const buf = await buffer(req);
 
   const parsedFromEnv = (WEBHOOK_SECRET || '').trim();
-  const secrets = parsedFromEnv
-    ? parsedFromEnv.split(',').map(s => s.trim()).filter(Boolean)
-    : [];
+  const secrets = parsedFromEnv ? parsedFromEnv.split(',').map(s => s.trim()).filter(Boolean) : [];
 
   for (const secret of secrets) {
     try {
@@ -176,8 +206,7 @@ async function parseStripeEvent(req) {
     } catch {}
   }
 
-  const allowInsecure =
-    process.env.DEV_WEBHOOK_NO_VERIFY === 'true' || process.env.NODE_ENV !== 'production';
+  const allowInsecure = process.env.DEV_WEBHOOK_NO_VERIFY === 'true' || process.env.NODE_ENV !== 'production';
 
   if (allowInsecure) {
     const ev = JSON.parse(buf.toString('utf8'));
@@ -191,6 +220,7 @@ async function parseStripeEvent(req) {
   );
 }
 
+/* ---------- Handler ---------- */
 export default async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).end('Method Not Allowed');
 
@@ -198,12 +228,11 @@ export default async function handler(req, res) {
     const { event, rawLength } = await parseStripeEvent(req);
     const { type } = event;
 
-    // Very visible in terminal:
     console.log('🔔 Stripe webhook:', type);
 
     await logStripeEvent({ event, rawLength });
 
-    // Subscription lifecycle: created/updated/deleted
+    // Subscription lifecycle (includes 'deleted' after full cancel)
     if (
       type === 'customer.subscription.created' ||
       type === 'customer.subscription.updated' ||
@@ -215,15 +244,15 @@ export default async function handler(req, res) {
         await writeFromSubscriptionEvent(subscription);
       } catch (innerErr) {
         console.error('[handler] sub-event write failed:', innerErr?.stack || innerErr?.message || innerErr);
+        // acknowledge so Stripe doesn’t hammer your local dev endlessly
         return res.status(200).json({ received: true, noted: 'sub write failed (see logs)' });
       }
     }
 
-    // Checkout session completed: link customer ↔ uid and hydrate sub once
+    // Map uid after checkout
     if (type === 'checkout.session.completed') {
       const session = event.data.object;
       const result = await handleCheckoutCompleted(session);
-
       await logStripeEvent({
         event,
         rawLength,
@@ -232,11 +261,7 @@ export default async function handler(req, res) {
       });
     }
 
-    // Optional noise reduction: just log these
-    if (type === 'invoice.payment_failed' || type === 'customer.subscription.trial_will_end') {
-      // no-op for now
-    }
-
+    // Optional: other events can be no-ops for now
     return res.status(200).json({ received: true });
   } catch (err) {
     console.error('[webhook] top-level error:', err?.stack || err?.message || err);
