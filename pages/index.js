@@ -15,10 +15,45 @@ export default function LandingPage() {
   const [user, setUser] = useState(null);
   const [open, setOpen] = useState(false);
 
+  // Stripe subscription snapshot (status-live API)
+  const [sub, setSub] = useState(null);
+  const [subLoading, setSubLoading] = useState(false);
+
   useEffect(() => {
-    const unsub = onAuthStateChanged(auth, (u) => setUser(u || null));
+    const unsub = onAuthStateChanged(auth, async (u) => {
+      setUser(u || null);
+
+      // fetch live subscription when logged in
+      if (u) {
+        setSubLoading(true);
+        try {
+          const token = await u.getIdToken();
+          const res = await fetch('/api/subscription/status-live', {
+            method: 'GET',
+            headers: { Authorization: `Bearer ${token}` },
+          });
+          const data = await res.json();
+          if (res.ok) {
+            setSub(data);
+          } else {
+            setSub(null);
+            console.warn('status-live error:', data?.error);
+          }
+        } catch (e) {
+          setSub(null);
+          console.warn('status-live fetch failed:', e);
+        } finally {
+          setSubLoading(false);
+        }
+      } else {
+        setSub(null);
+      }
+    });
     return () => unsub();
   }, []);
+
+  // Treat active/trialing as "already have a plan"
+  const hasActivePlan = (sub?.status === 'active' || sub?.status === 'trialing');
 
   const initials = useMemo(() => {
     if (!user) return '';
@@ -38,6 +73,7 @@ export default function LandingPage() {
     }
   };
 
+  // (kept in case you want to use it later)
   const handleChoose = async (priceId, e) => {
     const u = auth.currentUser;
     if (!u) return; // not signed in → let Link navigate to /login?next=...
@@ -59,6 +95,54 @@ export default function LandingPage() {
       console.error(err);
       alert('Something went wrong starting checkout.');
     }
+  };
+
+  // Reusable plan button (keeps your original behavior)
+  const PlanButton = ({ planSlug, children }) => {
+    const disabled = !!user && hasActivePlan; // only disable for signed-in users with active/trialing plan
+    const title = disabled ? 'You already have a plan' : '';
+
+    // login next target
+    const nextHref = `/login?next=/billing/checkout?plan=${planSlug}`;
+
+    // When signed in and NOT disabled → direct to checkout
+    // When signed in and disabled → prevent any navigation
+    // When signed out → Link sends to /login?next=...
+    return (
+      <div className="relative group">
+        <Link href={user ? `/billing/checkout?plan=${planSlug}` : nextHref}>
+          <button
+            disabled={disabled}
+            title={title}
+            className="bg-purple-800 text-white w-full py-2 rounded disabled:opacity-50 disabled:cursor-not-allowed transition"
+            onClick={(e) => {
+              if (disabled) {
+                // stop both Link navigation and onClick work
+                e.preventDefault();
+                e.stopPropagation();
+                return;
+              }
+              if (auth.currentUser) {
+                // keep your original inline redirect behavior
+                e.preventDefault();
+                e.stopPropagation();
+                window.location.href = `/billing/checkout?plan=${planSlug}`;
+              }
+              // if logged out, let Link do /login?next=...
+            }}
+          >
+            {children}
+          </button>
+        </Link>
+
+        {/* Hover tooltip shown only when disabled */}
+        {disabled && (
+          <span className="pointer-events-none absolute -top-8 left-1/2 -translate-x-1/2 whitespace-nowrap rounded bg-black text-white text-xs px-2 py-1 opacity-0 group-hover:opacity-100 transition">
+            You already have a plan
+          </span>
+        )}
+      </div>
+    );
   };
 
   return (
@@ -280,20 +364,7 @@ export default function LandingPage() {
             <h3 className="text-xl font-semibold text-purple-700 mb-2">Starter</h3>
             <p className="text-4xl font-bold text-purple-800 mb-2">$19.99</p>
             <p className="text-sm text-gray-600 mb-4">100 comparisons / month</p>
-            <Link href={`/login?next=/billing/checkout?plan=basic`}>
-              <button
-                className="bg-purple-800 text-white w-full py-2 rounded"
-                onClick={(e) => {
-                  if (auth.currentUser) {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    window.location.href = '/billing/checkout?plan=basic';
-                  }
-                }}
-              >
-                Choose Starter
-              </button>
-            </Link>
+            <PlanButton planSlug="basic">Choose Starter</PlanButton>
           </div>
 
           {/* Pro */}
@@ -301,20 +372,7 @@ export default function LandingPage() {
             <h3 className="text-xl font-semibold text-purple-700 mb-2">Pro</h3>
             <p className="text-4xl font-bold text-purple-800 mb-2">$49.99</p>
             <p className="text-sm text-gray-600 mb-4">500 comparisons / month</p>
-            <Link href={`/login?next=/billing/checkout?plan=pro`}>
-              <button
-                className="bg-purple-800 text-white w-full py-2 rounded"
-                onClick={(e) => {
-                  if (auth.currentUser) {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    window.location.href = '/billing/checkout?plan=pro';
-                  }
-                }}
-              >
-                Choose Pro
-              </button>
-            </Link>
+            <PlanButton planSlug="pro">Choose Pro</PlanButton>
           </div>
 
           {/* Unlimited */}
@@ -322,22 +380,14 @@ export default function LandingPage() {
             <h3 className="text-xl font-semibold text-purple-700 mb-2">Unlimited</h3>
             <p className="text-4xl font-bold text-purple-800 mb-2">$99.99</p>
             <p className="text-sm text-gray-600 mb-4">Unlimited comparisons</p>
-            <Link href={`/login?next=/billing/checkout?plan=elite`}>
-              <button
-                className="bg-purple-800 text-white w-full py-2 rounded"
-                onClick={(e) => {
-                  if (auth.currentUser) {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    window.location.href = '/billing/checkout?plan=elite';
-                  }
-                }}
-              >
-                Choose Unlimited
-              </button>
-            </Link>
+            <PlanButton planSlug="elite">Choose Unlimited</PlanButton>
           </div>
         </div>
+
+        {/* Optional: tiny hint while we’re fetching status */}
+        {user && subLoading && (
+          <p className="mt-4 text-sm text-gray-500">Checking your subscription…</p>
+        )}
       </section>
 
       {/* Footer */}
