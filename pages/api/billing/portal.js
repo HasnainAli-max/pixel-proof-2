@@ -3,8 +3,7 @@ import { stripe } from '@/lib/stripe/stripe';
 import { authAdmin } from '@/lib/firebase/firebaseAdmin';
 
 const RETURN_URL =
-  process.env.NEXT_PUBLIC_UTILITY_URL ||
-  process.env.PORTAL_RETURN_URL ||
+  process.env.STRIPE_PORTAL_RETURN_URL||
   `${process.env.APP_URL || 'https://pixel-proof-2-renu.vercel.app'}/utility`;
 
 const PICKABLE_SUB_STATUSES = [
