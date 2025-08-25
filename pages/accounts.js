@@ -18,14 +18,11 @@ export default function Accounts() {
   // sign out (same behavior) + toast
   const handleSignOut = async () => {
     try {
-      await toast.promise(
-        signOut(auth),
-        {
-          loading: "Signing you out…",
-          success: "Signed out.",
-          error: "Sign out failed. Please try again.",
-        }
-      );
+      await toast.promise(signOut(auth), {
+        loading: "Signing you out…",
+        success: "Signed out.",
+        error: "Sign out failed. Please try again.",
+      });
       router.replace("/login");
     } catch (e) {
       console.error("Sign out failed:", e);
@@ -53,13 +50,13 @@ export default function Accounts() {
     (async () => {
       try {
         const token = await authUser.getIdToken();
-        const res = await fetch('/api/subscription/status-live', {
-          method: 'GET',
+        const res = await fetch("/api/subscription/status-live", {
+          method: "GET",
           headers: { Authorization: `Bearer ${token}` },
         });
         const data = await res.json();
 
-        if (!res.ok) throw new Error(data?.error || 'Failed to fetch subscription');
+        if (!res.ok) throw new Error(data?.error || "Failed to fetch subscription");
 
         setSub(data);
       } catch (e) {
@@ -71,21 +68,23 @@ export default function Accounts() {
 
   // Derived values for UI (from auth + Stripe response)
   const view = useMemo(() => {
-    const name = authUser?.displayName || "—";
+    const name =
+      authUser?.displayName ||
+      (authUser?.email ? authUser.email.split("@")[0] : "") ||
+      "—";
     const loginEmail = authUser?.email || "—";
     const billingEmail = sub?.customerEmail || loginEmail;
+    const avatarUrl = authUser?.photoURL || null;
 
-    const plan = sub?.plan || (sub?.status === 'no_subscription' ? 'No plan' : '—');
-    const status = sub?.status || 'inactive';
+    const plan = sub?.plan || (sub?.status === "no_subscription" ? "No plan" : "—");
+    const status = sub?.status || "inactive";
 
     const amount =
-      typeof sub?.amount === 'number'
-        ? (sub.amount / 100).toFixed(2)
-        : "—";
+      typeof sub?.amount === "number" ? (sub.amount / 100).toFixed(2) : "—";
 
     const renewDate = formatDate(sub?.currentPeriodEnd);
 
-    return { name, loginEmail, billingEmail, plan, amount, status, renewDate };
+    return { name, loginEmail, billingEmail, plan, amount, status, renewDate, avatarUrl };
   }, [authUser, sub]);
 
   // Open Stripe Customer Portal (unchanged)
@@ -106,10 +105,16 @@ export default function Accounts() {
 
           const text = await res.text();
           let data;
-          try { data = JSON.parse(text); } catch { throw new Error(text); }
+          try {
+            data = JSON.parse(text);
+          } catch {
+            throw new Error(text);
+          }
           if (!res.ok) throw new Error(data.error || "Failed to create portal session");
 
-          setTimeout(() => { window.location.href = data.url; }, 300);
+          setTimeout(() => {
+            window.location.href = data.url;
+          }, 300);
           return "Redirecting to Stripe…";
         })(),
         {
@@ -137,30 +142,35 @@ export default function Accounts() {
 
   // Helper to choose a badge color for more statuses (active, trialing, canceled, past_due, unpaid, etc.)
   const statusBadgeClasses = (() => {
-    const s = (view.status || '').toLowerCase();
-    if (s === 'active') return "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300";
-    if (s === 'trialing') return "bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300";
-    if (s === 'canceled') return "bg-rose-100 text-rose-700 dark:bg-rose-900/40 dark:text-rose-300";
-    if (s === 'past_due') return "bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300";
-    if (s === 'unpaid') return "bg-orange-100 text-orange-800 dark:bg-orange-900/40 dark:text-orange-300";
-    if (s === 'no_subscription') return "bg-slate-200 text-slate-700 dark:bg-slate-700 dark:text-slate-300";
+    const s = (view.status || "").toLowerCase();
+    if (s === "active")
+      return "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300";
+    if (s === "trialing")
+      return "bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300";
+    if (s === "canceled")
+      return "bg-rose-100 text-rose-700 dark:bg-rose-900/40 dark:text-rose-300";
+    if (s === "past_due")
+      return "bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300";
+    if (s === "unpaid")
+      return "bg-orange-100 text-orange-800 dark:bg-orange-900/40 dark:text-orange-300";
+    if (s === "no_subscription")
+      return "bg-slate-200 text-slate-700 dark:bg-slate-700 dark:text-slate-300";
     return "bg-slate-200 text-slate-700 dark:bg-slate-700 dark:text-slate-300";
   })();
 
   // Line under price: cancel-aware message
   const planSubline = (() => {
     const status = sub?.status;
-    if (status === 'canceled' && sub?.canceledAt) {
+    if (status === "canceled" && sub?.canceledAt) {
       return `Canceled on ${formatDate(sub.canceledAt)}`;
     }
     if (sub?.cancelAtPeriodEnd && sub?.currentPeriodEnd) {
-      // still active but scheduled to end
       return `Ends on ${formatDate(sub.currentPeriodEnd)}`;
     }
     if (view.renewDate) {
       return `Renews on ${view.renewDate}`;
     }
-    return status === 'no_subscription' ? 'No subscription' : 'No renewal scheduled';
+    return status === "no_subscription" ? "No subscription" : "No renewal scheduled";
   })();
 
   return (
@@ -181,12 +191,25 @@ export default function Accounts() {
             <h2 className="text-xl font-semibold text-slate-900 dark:text-slate-100 mb-6">Profile</h2>
 
             <div className="flex items-center gap-4 mb-6">
-              <div className="h-14 w-14 flex items-center justify-center rounded-full bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-200 font-bold">
-                {initials(view.name)}
-              </div>
+              {view.avatarUrl ? (
+                <img
+                  src={view.avatarUrl}
+                  alt={`${view.name} avatar`}
+                  className="h-14 w-14 rounded-full object-cover ring-1 ring-black/10 dark:ring-white/10"
+                  referrerPolicy="no-referrer"
+                />
+              ) : (
+                <div className="h-14 w-14 flex items-center justify-center rounded-full bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-200 font-bold">
+                  {initials(view.name)}
+                </div>
+              )}
               <div>
-                <div className="text-slate-900 dark:text-slate-100 font-semibold">{view.name}</div>
-                <div className="text-slate-600 dark:text-slate-300 text-sm">{view.loginEmail}</div>
+                <div className="text-slate-900 dark:text-slate-100 font-semibold">
+                  {view.name}
+                </div>
+                <div className="text-slate-600 dark:text-slate-300 text-sm">
+                  {view.loginEmail}
+                </div>
               </div>
             </div>
 
@@ -220,9 +243,7 @@ export default function Accounts() {
                 </span>
                 {view.amount !== "—" && <span className="text-slate-600 dark:text-slate-300"> / mo</span>}
               </div>
-              <div className="text-slate-600 dark:text-slate-300 text-sm mt-2">
-                {planSubline}
-              </div>
+              <div className="text-slate-600 dark:text-slate-300 text-sm mt-2">{planSubline}</div>
             </div>
 
             <div className="space-y-3">
