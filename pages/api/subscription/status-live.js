@@ -42,11 +42,8 @@ export default async function handler(req, res) {
           query: `metadata['uid']:'${uid}' AND status:'complete'`,
           limit: 1,
         });
-        if (sessions.data[0]?.customer) {
-          customerId = typeof sessions.data[0].customer === 'string'
-            ? sessions.data[0].customer
-            : sessions.data[0].customer?.id || null;
-        }
+        const found = sessions.data[0]?.customer;
+        if (found) customerId = typeof found === 'string' ? found : found?.id || null;
       } catch {}
     }
 
@@ -54,17 +51,18 @@ export default async function handler(req, res) {
       return res.status(200).json({ status: 'no_customer' });
     }
 
-    // Get latest subscription (avoid deep expansions)
+    // Get latest relevant subscription (no deep expansions)
     const subs = await stripe.subscriptions.list({
       customer: customerId,
       status: 'all',
       limit: 5,
-      expand: ['data.items.data.price'], // safe 1-level expansion
+      expand: ['data.items.data.price'], // safe depth
     });
 
-    const sub = subs.data.find(s =>
-      ['active', 'trialing', 'past_due', 'unpaid', 'canceled', 'incomplete'].includes(s.status)
-    ) || null;
+    const sub =
+      subs.data.find(s =>
+        ['active', 'trialing', 'past_due', 'unpaid', 'canceled', 'incomplete'].includes(s.status)
+      ) || null;
 
     if (!sub) {
       return res.status(200).json({ status: 'no_subscription', customerId, customerEmail: email || null });
@@ -79,17 +77,17 @@ export default async function handler(req, res) {
     const plan = priceId ? (PLAN_BY_PRICE[priceId] || price?.nickname || 'unknown') : 'unknown';
 
     return res.status(200).json({
-      status: sub.status,                                 // 'active' / 'trialing' / 'canceled' / …
+      status: sub.status,
       plan,
       priceId,
       amount,
       currency,
-      currentPeriodStart: sub.current_period_start,       // seconds
-      currentPeriodEnd: sub.current_period_end,           // seconds
+      currentPeriodStart: sub.current_period_start,
+      currentPeriodEnd: sub.current_period_end,
       cancelAtPeriodEnd: !!sub.cancel_at_period_end,
-      cancelAt: sub.cancel_at || null,                    // seconds (scheduled cancel time)
-      canceledAt: sub.canceled_at || null,                // seconds (actual cancel time)
-      endedAt: sub.ended_at || null,                      // seconds (when access ended)
+      cancelAt: sub.cancel_at || null,
+      canceledAt: sub.canceled_at || null,
+      endedAt: sub.ended_at || null,
       subscriptionId: sub.id,
       customerId,
       customerEmail: email || null,

@@ -5,17 +5,13 @@ import { db, FieldValue, Timestamp } from '@/lib/firebase/firebaseAdmin';
 
 export const config = { api: { bodyParser: false } };
 
-// Pull the signing secret from env once and reuse
 const WEBHOOK_SECRET = process.env.STRIPE_WEBHOOK_SECRET;
 
-// Map price IDs → plan slugs
 const PLAN_BY_PRICE = {
   [process.env.STRIPE_PRICE_BASIC]: 'basic',
   [process.env.STRIPE_PRICE_PRO]: 'pro',
   [process.env.STRIPE_PRICE_ELITE]: 'elite',
 };
-
-/* ---------- Helpers ---------- */
 
 function toTs(secOrMs) {
   if (!secOrMs) return null;
@@ -23,7 +19,6 @@ function toTs(secOrMs) {
   return Timestamp.fromMillis(ms);
 }
 
-// Compact event log
 async function logStripeEvent({ event, rawLength, hint = {}, uid = null }) {
   const obj = event?.data?.object || {};
   const isSubObject = obj?.object === 'subscription';
@@ -48,15 +43,12 @@ async function logStripeEvent({ event, rawLength, hint = {}, uid = null }) {
   await db.collection('stripeEvents').doc(event.id).set(logDoc, { merge: true });
 }
 
-// Update Firestore user from a Subscription object
 async function writeFromSubscriptionEvent(subscription) {
-  // Normalize customerId
   const customerId =
     typeof subscription.customer === 'string'
       ? subscription.customer
       : subscription.customer?.id || subscription.customer || null;
 
-  // Try to resolve uid from the Stripe Customer metadata first
   let uidFromMetadata = null;
   let customerEmail = null;
   let customerName = null;
@@ -69,24 +61,20 @@ async function writeFromSubscriptionEvent(subscription) {
       customerEmail = cust?.email || null;
       customerName = cust?.name || null;
       customerAddress = cust?.address || null;
-    } catch (_) {
-      // ignore; we'll fall back to Firestore query
-    }
+    } catch {}
   }
 
-  // Determine price / plan details
   const item = subscription.items?.data?.[0] || null;
   const price = item?.price || null;
   const priceId = price?.id || null;
   const plan = priceId ? (PLAN_BY_PRICE[priceId] || price?.nickname || 'unknown') : 'unknown';
 
-  // Prepare the Firestore payload (cancel fields included)
   const payload = {
     stripeCustomerId: customerId || null,
     subscriptionId: subscription.id,
     priceId,
     activePlan: plan,
-    subscriptionStatus: subscription.status,
+    subscriptionStatus: subscription.status,             // <- 'canceled' will be written here
     currentPeriodStart: toTs(subscription.current_period_start),
     currentPeriodEnd: toTs(subscription.current_period_end),
     cancelAtPeriodEnd: !!subscription.cancel_at_period_end,
@@ -102,13 +90,11 @@ async function writeFromSubscriptionEvent(subscription) {
     updatedAt: FieldValue.serverTimestamp(),
   };
 
-  // 1) If we know uid from Stripe metadata, use it directly (most reliable)
   if (uidFromMetadata) {
     await db.collection('users').doc(uidFromMetadata).set(payload, { merge: true });
     return uidFromMetadata;
   }
 
-  // 2) Fallback: find the user by stripeCustomerId
   if (customerId) {
     const q = await db.collection('users')
       .where('stripeCustomerId', '==', customerId)
@@ -122,7 +108,6 @@ async function writeFromSubscriptionEvent(subscription) {
     }
   }
 
-  // 3) If we still cannot map, log an orphan for later inspection
   await db.collection('stripeOrphans').doc(String(subscription.id)).set({
     reason: 'No user doc with this stripeCustomerId and no customer.metadata.uid',
     customerId: customerId || null,
@@ -133,7 +118,6 @@ async function writeFromSubscriptionEvent(subscription) {
   return null;
 }
 
-// After a real checkout completes, map uid ↔ customer and optionally hydrate sub
 async function handleCheckoutCompleted(session) {
   if (session.mode !== 'subscription') return { note: 'ignored non-subscription session' };
 
@@ -141,15 +125,12 @@ async function handleCheckoutCompleted(session) {
   const customerId = typeof session.customer === 'string' ? session.customer : null;
   const subscriptionId = typeof session.subscription === 'string' ? session.subscription : null;
 
-  // Stamp (or merge) customer.metadata.uid so future events map reliably
   if (uid && customerId) {
     try {
       const current = await stripe.customers.retrieve(customerId);
       const nextMeta = { ...(current?.metadata || {}), uid };
       await stripe.customers.update(customerId, { metadata: nextMeta });
-    } catch (_) {
-      // non-fatal
-    }
+    } catch {}
 
     const customerDetails = session.customer_details || {};
     await db.collection('users').doc(uid).set(
@@ -167,7 +148,6 @@ async function handleCheckoutCompleted(session) {
     );
   }
 
-  // Immediately hydrate the subscription snapshot if available
   if (subscriptionId) {
     try {
       const sub = await stripe.subscriptions.retrieve(subscriptionId, { expand: ['items.data.price'] });
@@ -180,11 +160,6 @@ async function handleCheckoutCompleted(session) {
   return { uid, customerId, subscriptionId };
 }
 
-/**
- * Event parsing with explicit secret:
- * - Verify against STRIPE_WEBHOOK_SECRET (supports comma-separated values).
- * - In dev (DEV_WEBHOOK_NO_VERIFY=true or NODE_ENV!=='production'), fall back to raw JSON parsing if verification fails.
- */
 async function parseStripeEvent(req) {
   const sig = req.headers['stripe-signature'];
   const buf = await buffer(req);
@@ -198,21 +173,15 @@ async function parseStripeEvent(req) {
     try {
       const ev = stripe.webhooks.constructEvent(buf, sig, secret);
       return { event: ev, rawLength: buf.length, verifiedWith: secret };
-    } catch {
-      // try next secret
-    }
+    } catch {}
   }
 
   const allowInsecure =
     process.env.DEV_WEBHOOK_NO_VERIFY === 'true' || process.env.NODE_ENV !== 'production';
 
   if (allowInsecure) {
-    try {
-      const ev = JSON.parse(buf.toString('utf8'));
-      return { event: ev, rawLength: buf.length, verifiedWith: null, insecure: true };
-    } catch (e) {
-      throw new Error('DEV parse failed: ' + e.message);
-    }
+    const ev = JSON.parse(buf.toString('utf8'));
+    return { event: ev, rawLength: buf.length, verifiedWith: null, insecure: true };
   }
 
   throw new Error(
@@ -222,7 +191,6 @@ async function parseStripeEvent(req) {
   );
 }
 
-/* ---------- Handler ---------- */
 export default async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).end('Method Not Allowed');
 
@@ -230,20 +198,20 @@ export default async function handler(req, res) {
     const { event, rawLength } = await parseStripeEvent(req);
     const { type } = event;
 
-    // Helpful terminal log so you can see cancel events clearly
+    // Very visible in terminal:
     console.log('🔔 Stripe webhook:', type);
 
-    // Log every event compactly
     await logStripeEvent({ event, rawLength });
 
-    // Subscription lifecycle → write status/cancel fields to Firestore
+    // Subscription lifecycle: created/updated/deleted
     if (
       type === 'customer.subscription.created' ||
       type === 'customer.subscription.updated' ||
       type === 'customer.subscription.deleted'
     ) {
       try {
-        const subscription = event.data.object; // full subscription
+        const subscription = event.data.object;
+        console.log('   → sub id:', subscription.id, 'status:', subscription.status);
         await writeFromSubscriptionEvent(subscription);
       } catch (innerErr) {
         console.error('[handler] sub-event write failed:', innerErr?.stack || innerErr?.message || innerErr);
@@ -251,7 +219,7 @@ export default async function handler(req, res) {
       }
     }
 
-    // Checkout completed → map uid, stamp customer metadata, and hydrate sub
+    // Checkout session completed: link customer ↔ uid and hydrate sub once
     if (type === 'checkout.session.completed') {
       const session = event.data.object;
       const result = await handleCheckoutCompleted(session);
@@ -264,10 +232,9 @@ export default async function handler(req, res) {
       });
     }
 
-    // Optional: visible notice in logs for failed payments / trials
+    // Optional noise reduction: just log these
     if (type === 'invoice.payment_failed' || type === 'customer.subscription.trial_will_end') {
-      // handled by Stripe; we just log it so you can see it in terminal / Firestore
-      // (no Firestore write needed here for your current UI)
+      // no-op for now
     }
 
     return res.status(200).json({ received: true });
