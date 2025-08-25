@@ -13,12 +13,12 @@ const ExportPDF = ({ result }) => {
 
   return (
     <div className="mt-4">
-      <button
-        onClick={handlePrint}
-        className="bg-blue-500 hover:bg-blue-700 text-white font-semibold py-2 px-4 rounded"
-      >
-        Export as PDF
-      </button>
+     <button
+  onClick={handlePrint}
+  className="inline-flex items-center justify-center h-12 px-6 rounded-xl bg-[#6c2bd9] text-white font-semibold shadow-md hover:brightness-95 active:brightness-90 focus:outline-none focus:ring-2 focus:ring-[#6c2bd9]/40 transition"
+>
+  Export as PDF
+</button>
       <div ref={componentRef} className="hidden print:block text-black mt-4">
         <h2 className="text-xl font-bold mb-2">Visual Bug Report</h2>
         <div className="prose max-w-none">
