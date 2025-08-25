@@ -76,7 +76,7 @@ const CustomSignUp = () => {
       firstName,
       lastName,
       photoURL: photoURL || null,
-      avatarPath: avatarPath || null, // supabase/storage path (if you use it)
+      avatarPath: avatarPath || null,
       provider: user.providerData?.[0]?.providerId || "password",
       role: "user",
       updatedAt: serverTimestamp(),
@@ -124,17 +124,17 @@ const CustomSignUp = () => {
           // 1) Create Auth user (keeps them signed in)
           const { user } = await createUserWithEmailAndPassword(auth, email, password);
 
-          // 2) Upload avatar securely via server (if provided)
+          // 2) Upload avatar (optional)
           let uploaded = { photoURL: null, avatarPath: null };
           if (avatarFile) {
             uploaded = await uploadAvatarServer(avatarFile);
           }
 
-          // 3) Update Firebase profile with displayName + photoURL
+          // 3) Update Firebase profile
           const displayName = `${firstName} ${lastName}`.trim();
           await updateProfile(user, { displayName, photoURL: uploaded.photoURL || undefined });
 
-          // 4) Save/merge Firestore user doc (includes photo fields)
+          // 4) Save / merge Firestore user doc
           await upsertUserDoc(user, {
             firstName,
             lastName,
@@ -155,12 +155,10 @@ const CustomSignUp = () => {
         }
       );
 
-      // 6) Redirect without asking to log in again
+      // 6) Redirect (no sign-in page in between)
       if (planFromQuery) {
-        // If a plan was preselected before signup → go pay for that plan
         router.replace(`/billing/checkout?plan=${encodeURIComponent(planFromQuery)}`);
       } else {
-        // No plan preselected → go to utility
         router.replace("/utility");
       }
     } catch (e) {

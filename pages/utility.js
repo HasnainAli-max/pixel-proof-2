@@ -1,4 +1,3 @@
-
 // pages/utility.js
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/router';
@@ -36,11 +35,16 @@ export default function UtilityPage() {
 
   const router = useRouter();
 
-  // Auth guard + Firestore plan (just for counter display)
+  // Auth guard + Firestore plan (grace window to avoid flicker to /login after sign-up)
   useEffect(() => {
+    let redirectTimer = null;
+
     const unsubscribe = onAuthStateChanged(auth, async (u) => {
       if (u) {
+        // Signed in quickly → cancel any pending redirect
+        if (redirectTimer) clearTimeout(redirectTimer);
         setUser(u);
+
         try {
           const db = getFirestore();
           const snap = await getDoc(doc(db, 'users', u.uid));
@@ -57,10 +61,17 @@ export default function UtilityPage() {
         }
       } else {
         setUser(null);
-        router.replace('/login');
+        // ⬇️ Give Firebase up to 1.5s to hydrate the user (prevents brief hop to /login after sign-up)
+        redirectTimer = setTimeout(() => {
+          router.replace('/login');
+        }, 1500);
       }
     });
-    return () => unsubscribe();
+
+    return () => {
+      unsubscribe();
+      if (redirectTimer) clearTimeout(redirectTimer);
+    };
   }, [router]);
 
   // Theme toggle
@@ -277,21 +288,6 @@ export default function UtilityPage() {
           </strong>
           {planName ? ` (plan: ${planName})` : ''}
         </p>
-
-        {/* If no active subscription, show a friendly callout */}
-        {!subLoading && !hasActiveSubscription && (
-          <div className="mb-6 rounded-lg border border-rose-200 dark:border-rose-900 bg-rose-50 dark:bg-rose-900/30 p-4">
-            <p className="text-sm text-rose-800 dark:text-rose-200 mb-3">
-              You don’t have an active subscription. <strong>First buy the plan then start comparison.</strong>
-            </p>
-            <button
-              onClick={() => router.push('/')}
-              className="inline-flex items-center gap-2 rounded-md bg-purple-700 text-white px-4 py-2 text-sm font-semibold hover:brightness-110"
-            >
-              View Plans
-            </button>
-          </div>
-        )}
 
         <div className="border p-4 rounded bg-gray-50 dark:bg-gray-800 prose dark:prose-invert mb-10">
           <h2 className="font-semibold">How to Use</h2>
