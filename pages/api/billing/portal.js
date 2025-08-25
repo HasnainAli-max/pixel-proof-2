@@ -2,9 +2,8 @@
 import { stripe } from '@/lib/stripe/stripe';
 import { authAdmin } from '@/lib/firebase/firebaseAdmin';
 
-const RETURN_URL =
-  process.env.STRIPE_PORTAL_RETURN_URL||
-  `${process.env.APP_URL || 'https://pixel-proof-2-renu.vercel.app'}/utility`;
+// ✅ Force production redirect. No env, no headers, no surprises.
+const RETURN_URL = 'https://pixel-proof-2-renu.vercel.app/utility';
 
 const PICKABLE_SUB_STATUSES = [
   'active', 'trialing', 'past_due', 'unpaid', 'incomplete', 'canceled'
@@ -77,7 +76,7 @@ export default async function handler(req, res) {
         customer: customerId,
         status: 'all',
         limit: 5,
-        expand: ['data.items.data.price'], // safe expansion level
+        expand: ['data.items.data.price'], // safe expansion
       });
       const chosen =
         subs.data.find(s => PICKABLE_SUB_STATUSES.includes(s.status)) ||
@@ -88,15 +87,13 @@ export default async function handler(req, res) {
     // 4) Read intent from body: "update" | "cancel" | undefined
     const { intent } = (req.body || {});
 
-    // Base params (always include a return url)
+    // Base params (always include the forced production return url)
     const baseParams = {
       customer: customerId,
       return_url: `${RETURN_URL}?from=portal`,
     };
 
-    // If supported by your Stripe API version, use flow_data to:
-    // - Open a specific flow (update/cancel)
-    // - Auto-redirect back to RETURN_URL after completion
+    // Use flow_data for auto-redirect after completion
     let params = { ...baseParams };
 
     if (intent === 'cancel' && subId) {
@@ -123,8 +120,7 @@ export default async function handler(req, res) {
     let session;
     try {
       session = await stripe.billingPortal.sessions.create(params);
-    } catch (e) {
-      // Fallback for older API versions: still returns to /utility (manual "Return" link)
+    } catch {
       session = await stripe.billingPortal.sessions.create(baseParams);
     }
 
