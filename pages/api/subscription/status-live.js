@@ -18,44 +18,48 @@ export default async function handler(req, res) {
 
     const { uid, email } = await authAdmin.verifyIdToken(token);
 
-    // ---------- Find customer for this Firebase user ----------
     let customerId = null;
 
-    // 1) Prefer customer.metadata.uid = uid
+    // 1) Best: customers.search by metadata.uid
     try {
       const srch = await stripe.customers.search({
         query: `metadata['uid']:'${uid}'`,
         limit: 1,
       });
       if (srch.data[0]) customerId = srch.data[0].id;
-    } catch (_) {}
+    } catch {}
 
-    // 2) Fallback by email
+    // 2) Fallback: by email
     if (!customerId && email) {
       const list = await stripe.customers.list({ email, limit: 1 });
       if (list.data[0]) customerId = list.data[0].id;
     }
 
-    // 3) Fallback via recent completed Checkout Session that carries metadata.uid
+    // 3) Fallback: recent checkout session with metadata.uid
     if (!customerId) {
       try {
         const sessions = await stripe.checkout.sessions.search({
           query: `metadata['uid']:'${uid}' AND status:'complete'`,
           limit: 1,
         });
-        if (sessions.data[0]?.customer) customerId = sessions.data[0].customer;
-      } catch (_) {}
+        if (sessions.data[0]?.customer) {
+          customerId = typeof sessions.data[0].customer === 'string'
+            ? sessions.data[0].customer
+            : sessions.data[0].customer?.id || null;
+        }
+      } catch {}
     }
 
     if (!customerId) {
       return res.status(200).json({ status: 'no_customer' });
     }
 
-    // ---------- Get latest subscription (any state) ----------
+    // Get latest subscription (no deep product expansion to avoid the “>4-level” error)
     const subs = await stripe.subscriptions.list({
       customer: customerId,
       status: 'all',
       limit: 5,
+      expand: ['data.items.data.price'], // single-level expansion is fine
     });
 
     const sub = subs.data.find(s =>
@@ -63,54 +67,33 @@ export default async function handler(req, res) {
     ) || null;
 
     if (!sub) {
-      return res.status(200).json({ status: 'no_subscription', customerId });
+      return res.status(200).json({ status: 'no_subscription', customerId, customerEmail: email || null });
     }
 
     const item = sub.items?.data?.[0] || null;
-    const priceId = item?.price?.id || null;
-    const amount = item?.price?.unit_amount ?? null;
-    const currency = item?.price?.currency ?? null;
-    const plan = priceId ? (PLAN_BY_PRICE[priceId] || item?.price?.nickname || 'unknown') : 'unknown';
+    const price = item?.price || null;
 
-    // Cancellation-related fields (Stripe semantics)
-    const cancelAtPeriodEnd = !!sub.cancel_at_period_end;
-    const cancelAt   = sub.cancel_at   || null; // seconds since epoch (when it will cancel, if scheduled)
-    const canceledAt = sub.canceled_at || null; // seconds since epoch (when it actually got canceled)
-    const endedAt    = sub.ended_at    || null; // seconds since epoch (end of the subscription)
-    const currentPeriodStart = sub.current_period_start || null;
-    const currentPeriodEnd   = sub.current_period_end   || null;
-
-    // A friendly “displayStatus” for your UI
-    const displayStatus =
-      sub.status === 'canceled' ? 'canceled'
-      : cancelAtPeriodEnd        ? 'canceling'
-      : sub.status;
+    const priceId = price?.id || null;
+    const amount = typeof price?.unit_amount === 'number' ? price.unit_amount : null;
+    const currency = price?.currency || null;
+    const plan = priceId ? (PLAN_BY_PRICE[priceId] || price?.nickname || 'unknown') : 'unknown';
 
     return res.status(200).json({
-      // original status from Stripe + a display label
-      status: sub.status,
-      displayStatus,
-
-      // plan/price info
+      status: sub.status,                                 // 'active' / 'trialing' / 'canceled' / …
       plan,
       priceId,
       amount,
       currency,
-
-      // period info
-      currentPeriodStart,
-      currentPeriodEnd,
-
-      // cancel info
-      cancelAtPeriodEnd,
-      cancelAt,
-      canceledAt,
-      endedAt,
-
-      // ids / context
-      customerId,
-      customerEmail: email,
+      currentPeriodStart: sub.current_period_start,       // seconds
+      currentPeriodEnd: sub.current_period_end,           // seconds
+      cancelAtPeriodEnd: !!sub.cancel_at_period_end,
+      cancelAt: sub.cancel_at || null,                    // seconds (when it WILL cancel)
+      canceledAt: sub.canceled_at || null,                // seconds (when it DID cancel)
+      endedAt: sub.ended_at || null,                      // seconds (when access ended)
+      cancelNowAtPeriodEnd: !!sub.cancel_at_period_end,   // alias for UI convenience
       subscriptionId: sub.id,
+      customerId,
+      customerEmail: email || null,
     });
   } catch (e) {
     console.error('status-live error', e);
