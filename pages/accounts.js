@@ -1,3 +1,5 @@
+// 1sr code
+
 // import Head from "next/head";
 // import { useEffect, useMemo, useState } from "react";
 // import { useRouter } from "next/router";
@@ -264,7 +266,7 @@
 
 
 
-
+// second code 
 import Head from "next/head";
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/router";

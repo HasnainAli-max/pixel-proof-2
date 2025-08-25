@@ -1,82 +1,89 @@
-// pages/api/subscription/status-live.js
 import { stripe } from '@/lib/stripe/stripe';
 import { authAdmin } from '@/lib/firebase/firebaseAdmin';
 
 const PLAN_BY_PRICE = {
-  [process.env.STRIPE_PRICE_BASIC]: 'Basic',
-  [process.env.STRIPE_PRICE_PRO]: 'Pro',
-  [process.env.STRIPE_PRICE_ELITE]: 'Elite',
+  [process.env.STRIPE_PRICE_BASIC]: 'basic',
+  [process.env.STRIPE_PRICE_PRO]: 'pro',
+  [process.env.STRIPE_PRICE_ELITE]: 'elite',
 };
 
 export default async function handler(req, res) {
   if (req.method !== 'GET') return res.status(405).json({ error: 'Method not allowed' });
 
   try {
-    // Verify Firebase ID token
     const auth = req.headers.authorization || '';
     const token = auth.startsWith('Bearer ') ? auth.slice(7) : null;
     if (!token) return res.status(401).json({ error: 'Missing ID token' });
 
-    const decoded = await authAdmin.verifyIdToken(token);
-    const { uid, email } = decoded || {};
+    const { uid, email } = await authAdmin.verifyIdToken(token);
 
-    // Find Stripe customer (metadata.uid first, fallback to email)
-    let customer = null;
+    let customerId = null;
+
+    // 1) Try by metadata.uid (best link)
     try {
-      const search = await stripe.customers.search({
-        query: `metadata['uid']:"${uid}"`,
+      const srch = await stripe.customers.search({
+        // NOTE: requires Search API (enabled by default on test)
+        query: `metadata['uid']:'${uid}'`,
         limit: 1,
       });
-      customer = search.data?.[0] || null;
+      if (srch.data[0]) customerId = srch.data[0].id;
     } catch (_) {}
-    if (!customer && email) {
-      const byEmail = await stripe.customers.list({ email, limit: 1 });
-      customer = byEmail.data?.[0] || null;
-    }
-    if (!customer) return res.status(200).json({ status: 'no_customer' });
 
-    // Only expand to price (NOT product) to stay within 4 levels
+    // 2) Fallback: by email
+    if (!customerId && email) {
+      const list = await stripe.customers.list({ email, limit: 1 });
+      if (list.data[0]) customerId = list.data[0].id;
+    }
+
+    // 3) Fallback: find recent checkout session by uid metadata
+    if (!customerId) {
+      try {
+        const sessions = await stripe.checkout.sessions.search({
+          query: `metadata['uid']:'${uid}' AND status:'complete'`,
+          limit: 1,
+        });
+        if (sessions.data[0]?.customer) customerId = sessions.data[0].customer;
+      } catch (_) {}
+    }
+
+    if (!customerId) {
+      return res.status(200).json({ status: 'no_customer' });
+    }
+
+    // Get latest relevant subscription
     const subs = await stripe.subscriptions.list({
-      customer: customer.id,
+      customer: customerId,
       status: 'all',
-      limit: 10,
-      expand: ['data.items.data.price'],
+      limit: 5,
     });
 
-    if (!subs.data.length) {
-      return res.status(200).json({
-        status: 'no_subscription',
-        customerEmail: customer.email || null,
-      });
-    }
+    const sub =
+      subs.data.find(s =>
+        ['active', 'trialing', 'past_due', 'unpaid', 'canceled', 'incomplete'].includes(s.status)
+      ) || null;
 
-    // Prefer active/trialing, else most recent
-    const preferred =
-      subs.data.find(s => ['active', 'trialing'].includes(s.status)) ||
-      subs.data.sort((a, b) => b.created - a.created)[0];
+    if (!sub) return res.status(200).json({ status: 'no_subscription', customerId });
 
-    const item = preferred.items?.data?.[0] || null;
-    const price = item?.price || null;
+    const item = sub.items?.data?.[0] || null;
+    const priceId = item?.price?.id || null;
+    const amount = item?.price?.unit_amount ?? null;
+    const currency = item?.price?.currency ?? null;
 
-    const priceId = price?.id || null;
-    const planName =
-      (priceId && PLAN_BY_PRICE[priceId]) ||
-      price?.nickname || // set a nickname on the Price in Stripe for a nice label
-      'Unknown';
-
-    const amount = typeof price?.unit_amount === 'number' ? price.unit_amount : null;
+    // Map to your plan names; fallback to nickname if map missing
+    const plan = priceId ? (PLAN_BY_PRICE[priceId] || item?.price?.nickname || 'unknown') : 'unknown';
 
     return res.status(200).json({
-      status: preferred.status,                    // 'active', 'trialing', etc.
-      plan: planName,                              // 'Basic' / 'Pro' / 'Elite' / nickname
-      priceId,                                     // Stripe price id
-      amount,                                      // cents
-      currency: price?.currency || 'usd',
-      interval: price?.recurring?.interval || null,
-      currentPeriodStart: preferred.current_period_start || null, // unix seconds
-      currentPeriodEnd: preferred.current_period_end || null,     // unix seconds
-      cancelAtPeriodEnd: !!preferred.cancel_at_period_end,
-      customerEmail: customer.email || null,
+      status: sub.status,
+      plan,
+      priceId,
+      amount,
+      currency,
+      currentPeriodStart: sub.current_period_start,
+      currentPeriodEnd: sub.current_period_end,
+      cancelAtPeriodEnd: !!sub.cancel_at_period_end,
+      customerId,
+      customerEmail: email,
+      subscriptionId: sub.id,
     });
   } catch (e) {
     console.error('status-live error', e);
