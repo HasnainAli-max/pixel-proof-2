@@ -5,7 +5,7 @@ import { db, FieldValue, Timestamp } from '@/lib/firebase/firebaseAdmin';
 
 export const config = { api: { bodyParser: false } };
 
-// Pull the signing secret from env once and reuse everywhere
+// Pull the signing secret from env once and reuse
 const WEBHOOK_SECRET = process.env.STRIPE_WEBHOOK_SECRET;
 
 // Map price IDs → plan slugs
@@ -80,7 +80,7 @@ async function writeFromSubscriptionEvent(subscription) {
   const priceId = price?.id || null;
   const plan = priceId ? (PLAN_BY_PRICE[priceId] || price?.nickname || 'unknown') : 'unknown';
 
-  // Prepare the Firestore payload (now includes full cancel fields)
+  // Prepare the Firestore payload (cancel fields included)
   const payload = {
     stripeCustomerId: customerId || null,
     subscriptionId: subscription.id,
@@ -96,15 +96,8 @@ async function writeFromSubscriptionEvent(subscription) {
     currency: price?.currency || null,
     amount: typeof price?.unit_amount === 'number' ? price.unit_amount : null,
     productId: price?.product || null,
-    // hydrate customer snapshot if we have it
     ...(customerEmail || customerName || customerAddress
-      ? {
-          stripeCustomer: {
-            email: customerEmail,
-            name: customerName,
-            address: customerAddress,
-          },
-        }
+      ? { stripeCustomer: { email: customerEmail, name: customerName, address: customerAddress } }
       : {}),
     updatedAt: FieldValue.serverTimestamp(),
   };
@@ -115,7 +108,7 @@ async function writeFromSubscriptionEvent(subscription) {
     return uidFromMetadata;
   }
 
-  // 2) Fallback: find the user by stripeCustomerId (your existing behavior)
+  // 2) Fallback: find the user by stripeCustomerId
   if (customerId) {
     const q = await db.collection('users')
       .where('stripeCustomerId', '==', customerId)
@@ -237,7 +230,8 @@ export default async function handler(req, res) {
     const { event, rawLength } = await parseStripeEvent(req);
     const { type } = event;
 
-    console.log('🔔', type);
+    // Helpful terminal log so you can see cancel events clearly
+    console.log('🔔 Stripe webhook:', type);
 
     // Log every event compactly
     await logStripeEvent({ event, rawLength });
@@ -249,7 +243,7 @@ export default async function handler(req, res) {
       type === 'customer.subscription.deleted'
     ) {
       try {
-        const subscription = event.data.object;
+        const subscription = event.data.object; // full subscription
         await writeFromSubscriptionEvent(subscription);
       } catch (innerErr) {
         console.error('[handler] sub-event write failed:', innerErr?.stack || innerErr?.message || innerErr);
@@ -268,6 +262,12 @@ export default async function handler(req, res) {
         uid: result?.uid || null,
         hint: { mappedFrom: 'checkout.session.completed' },
       });
+    }
+
+    // Optional: visible notice in logs for failed payments / trials
+    if (type === 'invoice.payment_failed' || type === 'customer.subscription.trial_will_end') {
+      // handled by Stripe; we just log it so you can see it in terminal / Firestore
+      // (no Firestore write needed here for your current UI)
     }
 
     return res.status(200).json({ received: true });

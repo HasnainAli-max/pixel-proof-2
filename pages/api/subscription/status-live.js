@@ -54,12 +54,12 @@ export default async function handler(req, res) {
       return res.status(200).json({ status: 'no_customer' });
     }
 
-    // Get latest subscription (no deep product expansion to avoid the “>4-level” error)
+    // Get latest subscription (avoid deep expansions)
     const subs = await stripe.subscriptions.list({
       customer: customerId,
       status: 'all',
       limit: 5,
-      expand: ['data.items.data.price'], // single-level expansion is fine
+      expand: ['data.items.data.price'], // safe 1-level expansion
     });
 
     const sub = subs.data.find(s =>
@@ -87,10 +87,9 @@ export default async function handler(req, res) {
       currentPeriodStart: sub.current_period_start,       // seconds
       currentPeriodEnd: sub.current_period_end,           // seconds
       cancelAtPeriodEnd: !!sub.cancel_at_period_end,
-      cancelAt: sub.cancel_at || null,                    // seconds (when it WILL cancel)
-      canceledAt: sub.canceled_at || null,                // seconds (when it DID cancel)
+      cancelAt: sub.cancel_at || null,                    // seconds (scheduled cancel time)
+      canceledAt: sub.canceled_at || null,                // seconds (actual cancel time)
       endedAt: sub.ended_at || null,                      // seconds (when access ended)
-      cancelNowAtPeriodEnd: !!sub.cancel_at_period_end,   // alias for UI convenience
       subscriptionId: sub.id,
       customerId,
       customerEmail: email || null,
