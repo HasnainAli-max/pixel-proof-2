@@ -73,62 +73,35 @@ export default function LandingPage() {
     }
   };
 
-  // (kept in case you want to use it later)
-  const handleChoose = async (priceId, e) => {
-    const u = auth.currentUser;
-    if (!u) return; // not signed in → let Link navigate to /login?next=...
-
-    e.preventDefault();
-    e.stopPropagation();
-
-    try {
-      const idToken = await u.getIdToken();
-      const res = await fetch('/api/checkout', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${idToken}` },
-        body: JSON.stringify({ priceId }),
-      });
-      const data = await res.json();
-      if (data?.url) window.location.href = data.url;
-      else alert(data?.error || 'Unable to start checkout.');
-    } catch (err) {
-      console.error(err);
-      alert('Something went wrong starting checkout.');
-    }
-  };
-
-  // Reusable plan button (keeps your original behavior)
+  // Reusable plan button
   const PlanButton = ({ planSlug, children }) => {
-    const disabled = !!user && hasActivePlan; // only disable for signed-in users with active/trialing plan
+    const disabled = !!user && hasActivePlan; // disable only for signed-in users with active/trialing plan
     const title = disabled ? 'You already have a plan' : '';
 
-    // login next target
-    const nextHref = `/login?next=/billing/checkout?plan=${planSlug}`;
-
+    // When signed out → go to /signup?plan=...
     // When signed in and NOT disabled → direct to checkout
-    // When signed in and disabled → prevent any navigation
-    // When signed out → Link sends to /login?next=...
+    // When signed in and disabled → do nothing
+    const hrefIfLoggedOut = `/signup?plan=${planSlug}`;
+
     return (
       <div className="relative group">
-        <Link href={user ? `/billing/checkout?plan=${planSlug}` : nextHref}>
+        <Link href={user ? `/billing/checkout?plan=${planSlug}` : hrefIfLoggedOut}>
           <button
             disabled={disabled}
             title={title}
             className="bg-purple-800 text-white w-full py-2 rounded disabled:opacity-50 disabled:cursor-not-allowed transition"
             onClick={(e) => {
               if (disabled) {
-                // stop both Link navigation and onClick work
                 e.preventDefault();
                 e.stopPropagation();
                 return;
               }
               if (auth.currentUser) {
-                // keep your original inline redirect behavior
                 e.preventDefault();
                 e.stopPropagation();
                 window.location.href = `/billing/checkout?plan=${planSlug}`;
               }
-              // if logged out, let Link do /login?next=...
+              // if logged out, let Link do /signup?plan=...
             }}
           >
             {children}
